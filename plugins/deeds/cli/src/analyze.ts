@@ -12,8 +12,8 @@ import { commitDiff, listCommits, type CommitInfo } from "./git.ts";
 import type { Deed } from "./schema.ts";
 import { tallyDeeds, type Tally } from "./totals.ts";
 
-/** full: one full-model read per commit (--mode full); jev: the judgment API, the default (src/jev/judge.ts). */
-export type AnalyzeMode = "full" | "jev";
+/** full: one full-model read per commit (--mode full); jev: the judgment API, the default; cli: a local headless CLI (src/cli-judge.ts). */
+export type AnalyzeMode = "full" | "jev" | "cli";
 /**
  * Every scheme a cache directory was ever keyed by. `fast` is the retired typed-question mode: its scheme stays
  * so its old entries keep their own directories and are never served to another mode.
@@ -81,7 +81,7 @@ export interface CommitResult extends CommitInfo {
 
 export interface Report {
   repo: string;
-  /** jev: the judgment API, the default; full: one full-model read per commit. */
+  /** jev: the judgment API, the default; full: one full-model read per commit; cli: a local headless CLI. */
   mode: AnalyzeMode;
   /** The model the run used, `<vendor>:<model>`. */
   model: string;
@@ -115,14 +115,15 @@ export function weekOf(iso: string): string {
 }
 
 /**
- * The cache key binds the canon, the model (in judgment mode, the judge version), the mode and the question set:
- * the question-system hash in judgment mode, the retired fast set version for fast, so no mode is served another's.
+ * The cache key binds the canon, the model (in judgment mode, the judge version, and for a CLI judge the
+ * vendor and command), the mode and the question set: the question-system hash for jev and cli, the retired
+ * fast set version for fast, so no mode or vendor is served another's.
  */
 export function cacheKey(canon: string, modelId: string, mode: CacheScheme, systemHash?: string): string {
-  if (mode === "jev" && !/^[0-9a-f]{64}$/.test(systemHash ?? "")) {
+  if ((mode === "jev" || mode === "cli") && !/^[0-9a-f]{64}$/.test(systemHash ?? "")) {
     throw new Error("cacheKey: judgment mode needs the question-system sha256");
   }
-  const scheme = mode === "jev" ? `jev:${systemHash}` : mode === "fast" ? RETIRED_FAST_SCHEME : "full";
+  const scheme = mode === "jev" ? `jev:${systemHash}` : mode === "cli" ? `cli:${systemHash}` : mode === "fast" ? RETIRED_FAST_SCHEME : "full";
   return createHash("sha256").update(canon).update("\0").update(modelId).update("\0").update(scheme).digest("hex").slice(0, 16);
 }
 

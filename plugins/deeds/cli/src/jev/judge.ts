@@ -31,7 +31,7 @@ const MAX_ATTEMPTS = 3;
 const DEFAULT_CONCURRENCY = 32;
 const CAP_CHANGES: readonly string[] = ["new", "deepened", "regressed", "removed"];
 
-type WireQuestion =
+export type WireQuestion =
   | { type: "noul"; instructions: unknown; criteria?: unknown }
   | { type: "choice"; instructions: unknown; criteria: unknown }
   | { type: "score"; instructions: unknown; criteria: unknown };
@@ -283,6 +283,12 @@ export interface JudgeOptions {
   concurrency?: number;
   /** Where judged commits are cached; defaults to the user cache. A run given a fresh folder is an uncached run. */
   cacheRoot?: string;
+  /** Cache identity. The default is the Jev model id. A CLI judge passes its vendor and command here. */
+  modelId?: string;
+  /** What the report names when `reportMode` is cli. Defaults to `modelId`. */
+  reportModel?: string;
+  /** jev (default) or cli. Both use this question system; the cache scheme keeps their results apart. */
+  reportMode?: "jev" | "cli";
   onProgress?: ((done: number, total: number) => void) | undefined;
 }
 
@@ -298,11 +304,15 @@ async function pool<T, R>(items: T[], limit: number, fn: (t: T) => Promise<R>): 
   return out;
 }
 
-/** Judge every commit in the window with Jev and report, in the same report shape as every other mode. */
+/** Judge every commit in the window and report, in the same report shape as every other mode. */
 export async function judgeRepo(opts: JudgeOptions): Promise<Report> {
   const hash = systemHash(loadSystem());
   const settings = opts.settings ?? {};
-  const cacheDir = join(opts.cacheRoot ?? CACHE_ROOT, cacheKey(opts.canon, JEV_MODEL_ID, "jev", hash));
+  const reportMode = opts.reportMode ?? "jev";
+  const cacheId = opts.modelId ?? JEV_MODEL_ID;
+  // A local CLI is slow and quota-bound, so its default width stays at 2 unless the caller raises it.
+  const limit = opts.concurrency ?? (reportMode === "cli" ? 2 : DEFAULT_CONCURRENCY);
+  const cacheDir = join(opts.cacheRoot ?? CACHE_ROOT, cacheKey(opts.canon, cacheId, reportMode === "cli" ? "cli" : "jev", hash));
 
   const commits = listCommits(opts.repo, opts.since, opts.until);
   const paths = git(opts.repo, ["ls-files"]).split("\n").filter(Boolean);
@@ -315,7 +325,7 @@ export async function judgeRepo(opts: JudgeOptions): Promise<Report> {
   let answeredBy: string | null = null;
   const tokens = { input: 0, output: 0 };
 
-  const results = await pool(commits, opts.concurrency ?? DEFAULT_CONCURRENCY, async (c): Promise<CommitResult> => {
+  const results = await pool(commits, limit, async (c): Promise<CommitResult> => {
     const path = join(cacheDir, `${c.sha}.json`);
     try {
       if (existsSync(path)) {
@@ -355,8 +365,8 @@ export async function judgeRepo(opts: JudgeOptions): Promise<Report> {
   }
   return {
     repo: opts.label,
-    mode: "jev",
-    model: answeredBy ? `typesafe:${answeredBy}` : JEV_MODEL_ID,
+    mode: reportMode,
+    model: reportMode === "cli" ? (opts.reportModel ?? cacheId) : (answeredBy ? `typesafe:${answeredBy}` : JEV_MODEL_ID),
     complete: failed.length === 0,
     tokens,
     calls,

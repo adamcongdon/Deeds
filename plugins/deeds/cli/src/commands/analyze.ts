@@ -7,9 +7,10 @@ import { loadCanon } from "../canon.ts";
 import type { ModelFn } from "../classify.ts";
 import { type Command, type CommandContext, type CommandResult, DeedsError, EXIT, type JsonValue } from "../contract.ts";
 import { cloneOrFetch, isRepo } from "../git.ts";
+import { cliTransport } from "../cli-judge.ts";
 import { judgeRepo, liveTransport, recordedTransport, repoNameOf, type JevTransport } from "../jev/judge.ts";
 import { vendorModel } from "../model.ts";
-import { parseAnalyzeArgs, repoSettings, resolveJudge, resolveTarget, toSince, type ResolvedJudge, type ResolvedModel } from "../resolve.ts";
+import { parseAnalyzeArgs, repoSettings, resolveJudge, resolveTarget, toSince, type ResolvedCli, type ResolvedJudge, type ResolvedModel } from "../resolve.ts";
 
 export { toSince };
 
@@ -18,6 +19,7 @@ export interface AnalyzeDeps {
   env: Record<string, string | undefined>;
   makeModel: (r: ResolvedModel) => ModelFn;
   makeJev: (apiKey: string, env: Record<string, string | undefined>) => JevTransport;
+  makeCli: (r: ResolvedCli) => JevTransport;
 }
 
 /** The live Jev transport, or the recorded one when the DEEDS_JEV_RECORDING test seam names a file. */
@@ -30,6 +32,7 @@ export const liveDeps: AnalyzeDeps = {
   env: process.env,
   makeModel: (r) => vendorModel({ vendor: r.vendor, apiKey: r.apiKey, model: r.model }),
   makeJev: defaultJev,
+  makeCli: (r) => cliTransport(r),
 };
 
 /** analyze, with every input resolved through resolve.ts. */
@@ -84,24 +87,26 @@ export async function analyzeTarget(
   const canon = loadCanon();
   if (!canon) throw new DeedsError("canon_missing", "the deed canon is missing from this install", EXIT.error);
   const window = { since: toSince(win.since), ...(win.until ? { until: win.until } : {}) };
+  const shared = { repo, repoName: repoNameOf(target), label: target.label, ...window, canon, settings: repoSettings(deps.env), onProgress };
+  if (judge.mode === "cli") {
+    return await judgeRepo({
+      ...shared,
+      transport: deps.makeCli(judge),
+      modelId: judge.cacheModelId,
+      reportModel: judge.modelId,
+      reportMode: "cli",
+      concurrency: judge.concurrency,
+    });
+  }
   return judge.mode === "jev"
-    ? await judgeRepo({
-      repo,
-      repoName: repoNameOf(target),
-      label: target.label,
-      ...window,
-      canon,
-      transport: deps.makeJev(judge.apiKey, deps.env),
-      settings: repoSettings(deps.env),
-      onProgress,
-    })
+    ? await judgeRepo({ ...shared, transport: deps.makeJev(judge.apiKey, deps.env) })
     : await analyzeRepo({ repo, label: target.label, ...window, canon, model: deps.makeModel(judge), modelId: judge.modelId, onProgress });
 }
 
 const analyze: Command = {
   name: "analyze",
   summary: "Read a repo's commit history over a window and report its caps, fixes and tends.",
-  usage: "deeds analyze [path | github.com/owner/repo] [--since 90d] [--until <date>] [--mode jev|full] [--vendor anthropic|openai] [--model <id>] [--html <file>] [--color|--no-color] [--json]",
+  usage: "deeds analyze [path | github.com/owner/repo] [--since 90d] [--until <date>] [--mode jev|full|cli] [--vendor anthropic|openai|grok-cli|cursor] [--model <id>] [--html <file>] [--color|--no-color] [--json]",
   network: "model+clone",
   run: (ctx) => runAnalyze(ctx),
 };
