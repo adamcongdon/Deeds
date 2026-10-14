@@ -78,8 +78,8 @@ The first run installs the CLI's locked dependencies with `bun install --frozen-
 ## Usage
 
 ```sh
-deeds analyze [path | github.com/owner/repo] [--since 90d] [--until <date>] [--mode jev|full] [--vendor anthropic|openai] [--model <id>] [--html <file>] [--color|--no-color] [--json]
-deeds analyze-many <list-file> [--since 90d] [--until <date>] [--mode jev|full] [--out <dir>] [--json]
+deeds analyze [path | github.com/owner/repo] [--since 90d] [--until <date>] [--mode jev|full|cli] [--vendor anthropic|openai|grok-cli|cursor] [--model <id>] [--html <file>] [--color|--no-color] [--json]
+deeds analyze-many <list-file> [--since 90d] [--until <date>] [--mode jev|full|cli] [--vendor anthropic|openai|grok-cli|cursor] [--out <dir>] [--json]
 deeds extract [path] [--rev <commit>] [--json]
 deeds help --json
 deeds doctor
@@ -108,11 +108,52 @@ Results are cached per commit, so a repeat run makes no calls for commits alread
 
 `extract` and `doctor` run with the network switched off by the operating system. That uses macOS's built-in sandbox; on Linux, add `--allow-unsandboxed` to run them with the in-process guard alone.
 
+## Local CLI judge (no API key)
+
+If `grok` is already installed and logged in, deeds can judge every commit by shelling out to it. This path does not read `TYPESAFE_API_KEY`, `ANTHROPIC_API_KEY` or `OPENAI_API_KEY`.
+
+On a Mac:
+
+```sh
+curl -fsSL https://x.ai/cli/install.sh | bash
+grok login   # skip this if `grok` is already logged in
+```
+
+`~/.grok/bin` needs to be on `PATH` (the installer adds it to your shell profile). Then:
+
+```sh
+deeds analyze ~/code/CommandCenter --since 7d --vendor grok-cli --html report.html
+```
+
+`--vendor grok-cli` selects the local judge. `--mode cli` is the same mode, and `--vendor grok` is an alias. Cursor's CLI is the other built-in preset: `--vendor cursor` runs `cursor-agent -p --output-format json --mode ask`.
+
+The questions, the policy and the secret redaction are the ones Jev uses, so the counts stay comparable. The per-commit cache key includes the judge, so a Grok run never reuses a Jev or Cursor result. Two commits are judged at a time (`DEEDS_CLI_CONCURRENCY`), and each call times out and retries (`DEEDS_CLI_TIMEOUT_MS`, default three minutes). A commit that still fails is reported as `incomplete` and left out of the cache, so a rerun continues from the commits that succeeded.
+
+`deeds doctor` prints whether that CLI is on `PATH` and whether a local login is present (`~/.grok/auth.json` or `XAI_API_KEY` for Grok; `CURSOR_API_KEY` or `cursor-agent status` for Cursor). The probe does not make a model call.
+
+To point the same judge at another headless CLI, set `DEEDS_CLI_CMD` or `cli` in `~/.config/deeds/config.json`. A value with `{prompt}` or `{prompt-file}` marks where the prompt goes; otherwise Grok reads a prompt file and Cursor takes the prompt as an argument. `DEEDS_CLI_PROMPT` is `arg`, `stdin` or `file`. A top-level `cli.cmd` replaces the binary for every vendor; put a path under `cli.vendors` to change one of them.
+
+```sh
+export DEEDS_CLI_CMD='my-agent --output-format json {prompt}'
+```
+
+```json
+{
+  "cli": {
+    "concurrency": 2,
+    "timeoutMs": 180000,
+    "vendors": { "grok-cli": { "cmd": "/opt/homebrew/bin/grok" } }
+  }
+}
+```
+
+The CLI runs in a temporary directory with read-only flags (one turn, no approvals, no edit or shell tools). Deeds still redacts secrets before the prompt is written. The CLI, under your existing subscription, is what talks to the model.
+
 With `--json`, stdout is exactly one JSON document: `{"ok":true,"command":...,"data":...}` on success and `{"ok":false,"error":{"code","message"}}` on failure. A run where any commit could not be judged fails with code `incomplete`; rerun it, since judged commits are cached. Exit codes are 0 ok, 1 error, 2 usage, 3 denied. `--model <id>` or `DEEDS_MODEL` picks a different model for `--mode full`, and `deeds help --json` lists every command with its usage.
 
 ## Privacy
 
-- Only each commit's diff and its list of changed file paths leave your machine, and only to Jev (api.typesafe.ai) on your own key. `--mode full`, if you choose it, sends them to Anthropic or OpenAI instead. No other host is ever called for judgments. The only other network use is cloning a public GitHub repo you name.
+- Only each commit's diff and its list of changed file paths leave your machine, and only to Jev (api.typesafe.ai) on your own key. `--mode full`, if you choose it, sends them to Anthropic or OpenAI instead. `--vendor grok-cli` (or `--vendor cursor`) hands the same redacted state to that local CLI, which then uses your subscription. No other host is ever called for judgments by deeds itself. The only other network use is cloning a public GitHub repo you name.
 - Anything shaped like a secret (API keys, tokens, private keys, passwords in config) is redacted from a diff before it is sent.
 - Commit messages are never read.
 - Deeds keeps two caches. Public GitHub repos are cloned over HTTPS into `~/.cache/deeds/repos`, and per-commit results are stored in `~/.cache/deeds/classified`.
